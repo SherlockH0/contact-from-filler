@@ -1,1 +1,14 @@
 # contact-from-filler
+
+## Example .env
+
+```bash
+OPENAI_API_KEY=
+OPENAI_URL=
+HEADLESS=false
+PROXY_URL=
+PROXY_PASSWORD=
+PROXY_USERNAME=
+TWOCAPTCHA_TOKEN=
+```
+
