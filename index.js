@@ -23,6 +23,7 @@ puppeteer.use(
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = process.env.OPENAI_URL;
+const OPENAI_MODEL = process.env.OPENAI_MODEL;
 const HEADLESS = process.env.HEADLESS !== "false";
 const PROXY_URL = process.env.PROXY_URL;
 const PROXY_USERNAME = process.env.PROXY_USERNAME;
@@ -69,7 +70,7 @@ async function classifyFormsAI(forms) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "openai/gpt-oss-120b:free",
+      model: OPENAI_MODEL,
       messages: [
         {
           role: "system",
