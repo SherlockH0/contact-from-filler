@@ -125,7 +125,7 @@ Output format:
 
 async function screenshotAndUpload(page, filename) {
   const fullPath = path.join(SCREENSHOT_DIR, filename);
-  await page.screenshot({ path: fullPath, fullPage: true });
+  await page.screenshot({ path: fullPath, fullPage: false });
   return await uploadFile(fullPath, "image/png");
 }
 
