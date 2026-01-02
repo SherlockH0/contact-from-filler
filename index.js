@@ -1,5 +1,6 @@
 import puppeteer from "puppeteer-extra";
 
+import os from "os";
 import { setTimeout } from "node:timers/promises";
 import { uploadFile } from "./upload_file.js";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -35,7 +36,7 @@ const input = JSON.parse(
   }),
 );
 
-const SCREENSHOT_DIR = "/tmp/screenshots";
+const SCREENSHOT_DIR = path.join(os.tmpdir(), "screenshots");
 if (!fs.existsSync(SCREENSHOT_DIR))
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
