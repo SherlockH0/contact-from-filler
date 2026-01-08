@@ -2,7 +2,6 @@ import puppeteer from "puppeteer-extra";
 
 import os from "os";
 import { setTimeout } from "node:timers/promises";
-import { uploadFile } from "./upload_file.js";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fetch from "node-fetch";
 import fs from "fs";
@@ -123,12 +122,6 @@ Output format:
   return JSON.parse(data.choices[0].message.content);
 }
 
-async function screenshotAndUpload(page, filename) {
-  const fullPath = path.join(SCREENSHOT_DIR, filename);
-  await page.screenshot({ path: fullPath, fullPage: false });
-  return await uploadFile(fullPath, "image/png");
-}
-
 // ------------------ Main Logic ------------------
 
 async function run() {
@@ -185,10 +178,7 @@ async function run() {
     width: 1200 + Math.floor(Math.random() * 200),
     height: 800 + Math.floor(Math.random() * 200),
   });
-  const screenshotName =
-    Date.now() +
-    "_" +
-    startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
+  const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
   try {
     await page.goto(startUrl, { waitUntil: "domcontentloaded" });
@@ -239,7 +229,11 @@ async function run() {
       ) {
         continue;
       }
-      await screenshotAndUpload(page, `${screenshotName}_before.png`);
+
+      await page.screenshot({
+        path: path.join(SCREENSHOT_DIR, `${safeName}_before.png`),
+        fullPage: true,
+      });
 
       // browser side: mark fields
       await page.evaluate(
@@ -303,17 +297,15 @@ async function run() {
 
       await setTimeout(15000);
 
-      var fileId = await screenshotAndUpload(
-        page,
-        `${screenshotName}_after.png`,
-      );
-
+      await page.screenshot({
+        path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
+        fullPage: true,
+      });
       console.log(
         JSON.stringify({
           status: "success",
           url: startUrl,
           submitted: true,
-          fileId,
         }),
       );
       return;
@@ -327,16 +319,17 @@ async function run() {
       }),
     );
   } catch (err) {
-    let fileId = null;
     try {
-      fileId = await screenshotAndUpload(page, `${screenshotName}_error.png`);
+      await page.screenshot({
+        path: path.join(SCREENSHOT_DIR, `${safeName}_error.png`),
+        fullPage: true,
+      });
     } catch {}
 
     console.log(
       JSON.stringify({
         status: "failed",
         error: err.message,
-        fileId,
       }),
     );
   } finally {
