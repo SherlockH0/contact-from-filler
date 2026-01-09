@@ -31,7 +31,7 @@ async function run() {
     email = "newxt@example.com",
     message = "Hello, do you have any wands?",
     company = "NewtComp",
-    phone = "+3800609303",
+    phone = "123456789098",
     subject = "Hello",
     unknown = "Unknown",
     location = "US",
@@ -174,6 +174,7 @@ async function run() {
 
           for (const [fid, value] of Object.entries(mapping)) {
             const i = Number(fid.replace("f", ""));
+            if (els[i]?.getAttribute("type") === "submit") continue;
             if (!els[i]?.getAttribute("data-ai-fill-id")) {
               els[i]?.setAttribute("data-ai-fill-id", fid);
             }
@@ -235,13 +236,17 @@ async function run() {
 
         await setTimeout(300 + Math.random() * 700);
       }
-
-      await page.solveRecaptchas();
+      await setTimeout(3000);
 
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_before.png`),
         fullPage: true,
       });
+
+      const { error: captchaError } = await page.solveRecaptchas();
+      if (captchaError) {
+        throw new Error(`Failed to solve recaptcha: ${captchaError.error}`);
+      }
 
       await submitFormSmart(page, Number(valid_form_id));
 
