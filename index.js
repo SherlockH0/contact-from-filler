@@ -1,177 +1,28 @@
-import puppeteer from "puppeteer-extra";
-
-import os from "os";
-import { setTimeout } from "node:timers/promises";
+import "dotenv/config";
+import RecaptchaPlugin from "puppeteer-extra-plugin-recaptcha";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
-import RecaptchaPlugin from "puppeteer-extra-plugin-recaptcha";
-import "dotenv/config";
+import puppeteer from "puppeteer-extra";
+import {
+  TWO_CAPTCHA,
+  SCREENSHOT_DIR,
+  PROXY,
+  HEADLESS,
+} from "./utils/constants.js";
+import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
+import { filterContactLinks, submitFormSmart } from "./services/forms.js";
+import { inputFromStdin } from "./utils/input.js";
+import { setTimeout } from "node:timers/promises";
 
 puppeteer.use(StealthPlugin());
-puppeteer.use(
-  RecaptchaPlugin({
-    provider: {
-      id: "2captcha",
-      token: process.env.TWOCAPTCHA_TOKEN,
-    },
-    visualFeedback: true,
-  }),
-);
+puppeteer.use(RecaptchaPlugin(TWO_CAPTCHA));
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_URL = process.env.OPENAI_URL;
-const OPENAI_MODEL = process.env.OPENAI_MODEL;
-const HEADLESS = process.env.HEADLESS !== "false";
-const PROXY_URL = process.env.PROXY_URL;
-const PROXY_USERNAME = process.env.PROXY_USERNAME;
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD;
-
-const input = JSON.parse(
-  await new Promise((resolve) => {
-    let data = "";
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
-  }),
-);
-
-const SCREENSHOT_DIR = path.join(os.tmpdir(), "screenshots");
 if (!fs.existsSync(SCREENSHOT_DIR))
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
-// ------------------ Helpers ------------------
-
-function filterContactLinks(links) {
-  const regex = /(contact|get.*touch|reach|support|help)/i;
-  const negativeRegex = /blog/i;
-  return [
-    ...new Set(
-      links
-        .map((l) => {
-          try {
-            return new URL(l);
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean)
-        .filter((u) => {
-          if (u.protocol === "mailto:") return false;
-          if (negativeRegex.test(u.pathname)) return false;
-          return regex.test(u.pathname);
-        })
-        .map((u) => u.href)
-        .sort((a, b) => a.length - b.length),
-    ),
-  ];
-}
-async function classifyFormsAI(forms) {
-  const res = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      stream: false,
-      messages: [
-        {
-          role: "system",
-          content: `
-You analyze website forms.
-
-Your task:
-- Select the form that is meant to contact the company.
-- Prefer textarea for message
-- If no such form is found, return an empty object.
-
-Rules:
-- Choose only ONE or ZERO forms
-- Prefer textarea for message
-- Ignore newsletter, login, demo, search, checkout forms
-- Return JSON ONLY
-
-Output format:
-{
-  "form_index": number,
-}
-          `.trim(),
-        },
-        {
-          role: "user",
-          content: JSON.stringify(forms),
-        },
-      ],
-    }),
-  });
-
-  const data = await res.json();
-  return JSON.parse(
-    data.choices?.[0]?.message?.content || data?.message?.content || "{}",
-  );
-}
-
-async function submitFormSmart(page, formIndex) {
-  return await page.evaluate(async (index) => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const form = document.querySelectorAll("form")[index];
-    if (!form) return "no-form";
-
-    const click = async (btn, label) => {
-      btn.scrollIntoView({ block: "center" });
-      await sleep(50);
-      btn.click();
-      return label;
-    };
-
-    for (const btn of form.querySelectorAll(
-      'button[type="submit"], input[type="submit"]',
-    )) {
-      if (!btn.disabled && btn.offsetParent !== null)
-        return click(btn, "clicked-submit-button");
-    }
-
-    for (const btn of form.querySelectorAll("button, input[type=button]")) {
-      if (
-        !btn.disabled &&
-        btn.offsetParent !== null &&
-        /send|submit|continue|next|apply|contact/i.test(
-          btn.innerText || btn.value || "",
-        )
-      ) {
-        return click(btn, "clicked-fallback-button");
-      }
-    }
-
-    if (form.requestSubmit) {
-      form.requestSubmit();
-      return "requestSubmit";
-    }
-
-    const ev = new Event("submit", { bubbles: true, cancelable: true });
-    if (form.dispatchEvent(ev)) {
-      form.submit();
-      return "dispatch-submit";
-    }
-
-    form.submit();
-    return "forced-submit";
-  }, formIndex);
-}
-
-// ------------------ Main Logic ------------------
-
-import { classifyFormsAI } from "./services/openAIService.js";
-import { submitFormSmart, mapFormToValues } from "./services/formHandler.js";
-import {
-  filterContactLinks,
-  createScreenshotDir,
-} from "./utils/fileHelpers.js";
-import { validateEnvVariables } from "./utils/envValidation.js";
-
 async function run() {
+  const input = await inputFromStdin();
   const {
     startUrl,
     name = "Newt",
@@ -198,22 +49,21 @@ async function run() {
     location,
   };
 
-  const proxy_args = PROXY_URL ? [`--proxy-server=${PROXY_URL}`] : [];
+  const proxy_args = PROXY.url ? [`--proxy-server=${PROXY.url}`] : [];
   const browser = await puppeteer.launch({
     headless: HEADLESS,
-    devtools: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox", ...proxy_args],
   });
 
   const page = await browser.newPage();
-  if (PROXY_URL) {
-    if (!PROXY_USERNAME || !PROXY_PASSWORD)
+  if (PROXY.url) {
+    if (!PROXY.username || !PROXY.password)
       throw new Error(
         "PROXY_USERNAME and PROXY_PASSWORD must be set if PROXY_URL is set",
       );
     await page.authenticate({
-      password: PROXY_PASSWORD,
-      username: PROXY_USERNAME,
+      password: PROXY.password,
+      username: PROXY.username,
     });
   }
 
@@ -407,7 +257,7 @@ async function run() {
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: true,
       });
-      logger.info(
+      console.log(
         JSON.stringify({ status: "success", url: startUrl, submitted: true }),
       );
       return;
@@ -437,102 +287,6 @@ async function run() {
   } finally {
     await browser.close();
   }
-}
-
-// Function that maps a valid_form's fields to actual values using OpenAI and fallback generation
-async function mapFormToValues(valid_form, values) {
-  // Ask OpenAI which role each field corresponds to
-  const res = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages: [
-        {
-          role: "system",
-          content: `
-You are given a list of form fields (id, label, placeholder, name, type, tag) and a list of form values. 
-For each field you should return a value to use. For the fields that are not in the list of values, you should generate a realistic value.
-
-Rules:
-- For type="email", return a valid email string
-- For type="number" or "range", return a number
-- For select fields, choose one of the provided options
-- For multiple selects, return an array
-- Never return null or undefined
-
-
-Example input:
-{
-  values: {
-    email: "john@gmail.com",
-    full_name: "Peter Parker"
-  },
-  form: [
-      {
-        id: 'f0',
-        tag: 'input',
-        type: 'text',
-        name: '',
-        placeholder: '',
-        label: 'Name:',
-        multiple: false,
-        options: [],
-        selectedOptions: []
-      },
-      {
-        id: 'f1',
-        tag: 'input',
-        type: 'email',
-        name: '',
-        placeholder: '',
-        label: 'Email:',
-        multiple: false,
-        options: [],
-        selectedOptions: []
-      },
-      {
-        id: 'f2',
-        tag: 'input',
-        type: 'range',
-        name: '',
-        placeholder: '',
-        label: 'Rating (1‑10):',
-        multiple: false,
-        options: [],
-        selectedOptions: []
-      }
-  ]
-}
-
-Your output:
-{
-  "f0": "Peter Parker",
-  "f1": "john@gmail.com",
-  "f2": 10
-}
-
-Return a JSON object where keys are field ids and values are the final values to fill into the form.
-`.trim(),
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            values,
-            form: valid_form.fields,
-          }),
-        },
-      ],
-      stream: false,
-    }),
-  });
-  const data = await res.json();
-  return JSON.parse(
-    data.choices?.[0]?.message?.content || data?.message?.content || "{}",
-  );
 }
 
 run();
