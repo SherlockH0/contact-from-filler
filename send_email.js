@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { inputFromStdin } from "./utils/input.js";
 
 const input = await inputFromStdin();
 
@@ -26,7 +27,7 @@ transporter.sendMail(mailOptions, function (error, info) {
   const status = {
     success: !error,
     error: error || null,
-    info: info || null
+    info: info || null,
   };
   console.log(JSON.stringify(status, null, 2));
 });
