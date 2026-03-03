@@ -27,6 +27,9 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
+ENV SCREENSHOT_DIR=/app/screenshots
+RUN mkdir -p $SCREENSHOT_DIR
+
 COPY package*.json ./
 RUN npm ci --omit=dev
 

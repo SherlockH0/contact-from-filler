@@ -19,7 +19,7 @@ export const TWO_CAPTCHA = {
   },
   visualFeedback: true,
 };
-export const SCREENSHOT_DIR = path.join(
+export const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(
   path.resolve(import.meta.dirname, ".."),
   "screenshots",
 );
