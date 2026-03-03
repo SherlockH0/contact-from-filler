@@ -1,6 +1,5 @@
 import express from "express";
 import { run } from "./index.js";
-import logger from "./utils/logger.js";
 
 const app = express();
 app.use(express.json());
@@ -30,7 +29,7 @@ app.post("/run", async (req, res) => {
       .json({ success: false, error: "startUrl is required" });
   }
 
-  logger.info({ startUrl, name }, "Starting outreach request");
+  console.log(`[START] startUrl=${startUrl} name=${name}`);
 
   try {
     const result = await run({
@@ -49,23 +48,13 @@ app.post("/run", async (req, res) => {
       },
     });
 
-    if (result.status === "not_found") {
-      logger.warn({ startUrl }, "No form found");
-      return res.status(200).json({ success: false, ...result });
-    }
-
-    logger.info(
-      { startUrl, submitted: result.submitted },
-      "Outreach completed",
-    );
-    res.json({ success: true, ...result });
+    console.log(`[END] startUrl=${startUrl} status=${result.status} submitted=${result.submitted}`);
+    res.json({ success: result.status === "success", ...result });
   } catch (err) {
-    logger.error({ err: err.message, startUrl }, "Outreach failed");
+    console.log(`[ERROR] startUrl=${startUrl} error=${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () =>
-  logger.info({ port: PORT }, "Server started"),
-);
+app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));

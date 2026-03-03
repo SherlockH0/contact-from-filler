@@ -10,7 +10,6 @@ import {
   PROXY,
   HEADLESS,
 } from "./utils/constants.js";
-import logger from "./utils/logger.js";
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
 import { setTimeout } from "node:timers/promises";
@@ -50,7 +49,6 @@ export async function run({
   };
 
   const proxy_args = PROXY.url ? [`--proxy-server=${PROXY.url}`] : [];
-  logger.info({ startUrl, headless: HEADLESS }, "Launching browser");
   const browser = await puppeteer.launch({
     headless: HEADLESS,
     args: ["--no-sandbox", "--disable-setuid-sandbox", ...proxy_args],
@@ -58,7 +56,6 @@ export async function run({
 
   const page = await browser.newPage();
   if (PROXY.url) {
-    logger.info({ proxy: PROXY.url }, "Using proxy");
     if (!PROXY.username || !PROXY.password)
       throw new Error(
         "PROXY_USERNAME and PROXY_PASSWORD must be set if PROXY_URL is set",
@@ -81,7 +78,6 @@ export async function run({
   const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
   try {
-    logger.info({ startUrl }, "Loading page");
     await page.goto(startUrl, { waitUntil: "domcontentloaded" });
     const links =
       (await page.$$eval("a", (as) => {
@@ -89,7 +85,6 @@ export async function run({
       })) || [];
 
     const contactPages = [...filterContactLinks(links), startUrl];
-    logger.info({ pageCount: contactPages.length }, "Checking contact pages");
     for (const p of contactPages) {
       await page.goto(p, { waitUntil: "domcontentloaded" });
       try {
@@ -149,9 +144,8 @@ export async function run({
           ]),
         );
       });
-      const valid_form_id = (await classifyFormsAI(forms))?.form_id;
+      const valid_form_id = (await classifyFormsAI(forms))?.form_index;
       if (valid_form_id == undefined) continue;
-      logger.info({ formId: valid_form_id }, "Form classified, mapping values");
       const valid_form = forms[valid_form_id];
       const mapping = await mapFormToValues(valid_form, values);
       if (!mapping || Object.keys(mapping).length === 0) {
@@ -243,19 +237,16 @@ export async function run({
       }
       await setTimeout(3000);
 
-      logger.info("Taking before screenshot");
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_before.png`),
         fullPage: true,
       });
 
-      logger.info("Solving captchas");
       const { error: captchaError } = await page.solveRecaptchas();
       if (captchaError) {
         throw new Error(`Failed to solve recaptcha: ${captchaError.error}`);
       }
 
-      logger.info("Submitting form");
       await submitFormSmart(page, Number(valid_form_id));
 
       await Promise.race([
@@ -266,20 +257,16 @@ export async function run({
           })
           .catch(() => null),
       ]);
-      logger.info("Taking after screenshot");
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: true,
       });
-      logger.info({ startUrl }, "Form submitted successfully");
       return { status: "success", url: startUrl, submitted: true };
     }
 
-    logger.warn({ startUrl }, "No form found on any contact page");
     return { status: "not_found", url: startUrl, submitted: false };
   } catch (err) {
     try {
-      logger.error({ err: err.message }, "Error during form fill, taking error screenshot");
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_error.png`),
         fullPage: true,
