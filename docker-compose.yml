@@ -15,6 +15,7 @@ services:
       - PROXY_PASSWORD=${PROXY_PASSWORD}
       - HEADLESS=${HEADLESS:-true}
       - SCREENSHOT_DIR=/app/screenshots
+      - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       - ./screenshots:/app/screenshots
     networks:
