@@ -12,7 +12,6 @@ import {
 } from "./utils/constants.js";
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
-import { inputFromStdin } from "./utils/input.js";
 import { setTimeout } from "node:timers/promises";
 
 puppeteer.use(StealthPlugin());
@@ -21,9 +20,8 @@ puppeteer.use(RecaptchaPlugin(TWO_CAPTCHA));
 if (!fs.existsSync(SCREENSHOT_DIR))
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
-async function run() {
-  const input = await inputFromStdin();
-  const {
+export async function run({
+  input: {
     startUrl,
     name = "Newt",
     first_name = "Newt",
@@ -35,7 +33,8 @@ async function run() {
     subject = "Hello",
     unknown = "Unknown",
     location = "US",
-  } = input;
+  },
+}) {
   const values = {
     name,
     first_name,
@@ -262,19 +261,10 @@ async function run() {
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: true,
       });
-      console.log(
-        JSON.stringify({ status: "success", url: startUrl, submitted: true }),
-      );
-      return;
+      return { status: "success", url: startUrl, submitted: true };
     }
 
-    console.log(
-      JSON.stringify({
-        status: "not_found",
-        url: startUrl,
-        submitted: false,
-      }),
-    );
+    return { status: "not_found", url: startUrl, submitted: false };
   } catch (err) {
     try {
       await page.screenshot({
@@ -283,15 +273,8 @@ async function run() {
       });
     } catch {}
 
-    console.log(
-      JSON.stringify({
-        status: "failed",
-        error: err.message,
-      }),
-    );
+    throw err; // 👈 propagate to server.js
   } finally {
     await browser.close();
   }
 }
-
-run();

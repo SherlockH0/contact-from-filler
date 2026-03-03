@@ -45,4 +45,3 @@ This script will:
 - Save the tokens to `token.json` for reuse.
 
 Once completed, the app will be authorized to upload files to your Google Drive.
-
