@@ -1,47 +1,67 @@
-# contact-from-filler
+# cold-outreach
 
-## Example .env
+Automated form filler for cold outreach campaigns.
 
-```bash
-OPENAI_API_KEY=
-OPENAI_URL=
-HEADLESS=false
-PROXY_URL=
-PROXY_PASSWORD=
-PROXY_USERNAME=
-TWOCAPTCHA_TOKEN=
-```
-
-## Authentication Setup
-
-Before you can upload files to Google Drive using this project, you need to
-authorize the app to access your Google Drive account. This involves running
-the authentication script once to generate and save an OAuth token.
-
-### Google Cloud Project & OAuth Credentials
-
-- Create a Google Cloud project in the [Google Cloud Console](https://console.cloud.google.com/).
-- Enable the **Google Drive API** for your project.
-- Create OAuth 2.0 credentials (type: "Desktop app") in the Credentials section.
-- Download the credentials JSON file and save it as `credentials.json` in
-  the project root.
-
-### How to Run the Authentication Script
-
-Run the following command in your terminal:
+## Quick Start
 
 ```bash
-node auth.js
+docker-compose up --build
 ```
 
-This script will:
+## API
 
-- Read your OAuth client credentials from `credentials.json`.
-- Generate a consent URL and print it to the console.
-- Ask you to visit the URL, authorize the app, and copy the authorization code
-  from the URL.
-- Paste the code back into the terminal.
-- Exchange the authorization code for access and refresh tokens.
-- Save the tokens to `token.json` for reuse.
+**Endpoint:** `POST /run`
 
-Once completed, the app will be authorized to upload files to your Google Drive.
+```json
+{
+  "startUrl": "https://example.com/contact",
+  "name": "John Doe",
+  "first_name": "John",
+  "last_name": "Doe",
+  "email": "john@example.com",
+  "message": "Hello, I'd like to connect!",
+  "company": "Acme Inc",
+  "phone": "1234567890",
+  "subject": "Hello",
+  "unknown": "Unknown",
+  "location": "US"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "status": "success",
+  "url": "https://example.com/contact",
+  "submitted": true
+}
+```
+
+## Docker
+
+### Using n8n
+
+The container connects to the external `n8n` network. From n8n, call:
+
+```
+http://cold-outreach:3000/run
+```
+
+### Screenshots
+
+Screenshots are saved to `./screenshots` on the host (mounted as `/app/screenshots` in container).
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_URL` | OpenAI API URL (e.g., Ollama) |
+| `OPENAI_MODEL` | Model name |
+| `TWOCAPTCHA_TOKEN` | 2Captcha token for solving captchas |
+| `PROXY_URL` | Proxy URL |
+| `PROXY_USERNAME` | Proxy username |
+| `PROXY_PASSWORD` | Proxy password |
+| `HEADLESS` | Run browser in headless mode (default: true) |
