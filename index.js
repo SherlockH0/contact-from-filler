@@ -20,6 +20,49 @@ puppeteer.use(RecaptchaPlugin(TWO_CAPTCHA));
 if (!fs.existsSync(SCREENSHOT_DIR))
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
+async function solveRecaptcha(page) {
+  if (!TWO_CAPTCHA?.token) return;
+
+  const sitekey = await page
+    .$eval(".g-recaptcha", (el) => el.getAttribute("data-sitekey") ?? "")
+    .catch(() => null);
+  if (!sitekey) return;
+
+  const pageUrl = page.url();
+
+  const submitRes = await fetch(
+    `https://2captcha.com/in.php?key=${TWO_CAPTCHA.token}&method=userrecaptcha&googlekey=${sitekey}&pageurl=${pageUrl}&json=1`,
+  ).then((r) => r.json());
+  if (submitRes.status !== 1)
+    throw new Error(`2captcha submit failed: ${submitRes.request}`);
+
+  const taskId = submitRes.request;
+  let token = null;
+
+  for (let i = 0; i < 24; i++) {
+    await setTimeout(5000);
+    const pollRes = await fetch(
+      `https://2captcha.com/res.php?key=${TWO_CAPTCHA.token}&action=get&id=${taskId}&json=1`,
+    ).then((r) => r.json());
+    if (pollRes.status === 1) {
+      token = pollRes.request;
+      break;
+    }
+    if (pollRes.request !== "CAPCHA_NOT_READY")
+      throw new Error(`2captcha poll failed: ${pollRes.request}`);
+  }
+
+  if (!token) throw new Error("2captcha timed out");
+
+  await page.evaluate((t) => {
+    const el = document.getElementById("g-recaptcha-response");
+    if (el) {
+      el.value = t;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }, token);
+}
+
 export async function run({
   input: {
     startUrl,
@@ -47,10 +90,13 @@ export async function run({
     unknown,
     location,
   };
+  const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
   const proxy_args = PROXY.url ? [`--proxy-server=${PROXY.url}`] : [];
   const browser = await puppeteer.launch({
     headless: HEADLESS,
+    executablePath:
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     args: ["--no-sandbox", "--disable-setuid-sandbox", ...proxy_args],
   });
 
@@ -66,39 +112,40 @@ export async function run({
     });
   }
 
-  await page.setUserAgent({
+  const client = await page.createCDPSession();
+  await client.send("Network.setUserAgentOverride", {
     userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    platform: "Win32",
+    acceptLanguage: "en-US,en;q=0.9",
   });
 
   await page.setViewport({
     width: 1200 + Math.floor(Math.random() * 200),
     height: 800 + Math.floor(Math.random() * 200),
   });
-  const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
   try {
-    await page.goto(startUrl, { waitUntil: "domcontentloaded" });
-    const links =
-      (await page.$$eval("a", (as) => {
-        return as.map((a) => a.href);
-      })) || [];
+    const res = await page.goto(startUrl, { waitUntil: "domcontentloaded" });
+    console.log(`[GOTO] status=${res?.status()} url=${res?.url()}`);
 
+    const links = (await page.$$eval("a", (as) => as.map((a) => a.href))) || [];
     const contactPages = [...filterContactLinks(links), startUrl];
+
     for (const p of contactPages) {
       await page.goto(p, { waitUntil: "domcontentloaded" });
       try {
         await page.waitForSelector("form", { timeout: 10000 });
-      } catch (err) {
+      } catch {
         continue;
       }
+
       const forms = await page.evaluate(() => {
         function labelText(el) {
           return el.labels
             ? [...el.labels].map((l) => l.innerText).join(" ")
             : "";
         }
-
         return Object.fromEntries(
           Array.from(document.querySelectorAll("form")).map((form, idx) => [
             idx,
@@ -116,107 +163,90 @@ export async function run({
                   placeholder: el.placeholder || "",
                   label: labelText(el),
                   multiple: el.multiple ?? false,
-                  options: (() => {
-                    if (el.tagName.toLowerCase() !== "select") return [];
-                    const opts = [];
-                    el.querySelectorAll("option").forEach((o) => {
-                      const group =
-                        o.parentElement &&
-                        o.parentElement.tagName.toLowerCase() === "optgroup"
-                          ? o.parentElement.label
-                          : null;
-                      opts.push({
-                        value: o.value,
-                        label: o.label,
-                        disabled: o.disabled,
-                        selected: o.selected,
-                        optgroup: group,
-                      });
-                    });
-                    return opts;
-                  })(),
-                  selectedOptions: (() => {
-                    if (el.tagName.toLowerCase() !== "select") return [];
-                    return Array.from(el.selectedOptions).map((o) => o.value);
-                  })(),
+                  options:
+                    el.tagName.toLowerCase() !== "select"
+                      ? []
+                      : (() => {
+                          const opts = [];
+                          el.querySelectorAll("option").forEach((o) => {
+                            const group =
+                              o.parentElement?.tagName.toLowerCase() ===
+                              "optgroup"
+                                ? o.parentElement.label
+                                : null;
+                            opts.push({
+                              value: o.value,
+                              label: o.label,
+                              disabled: o.disabled,
+                              selected: o.selected,
+                              optgroup: group,
+                            });
+                          });
+                          return opts;
+                        })(),
+                  selectedOptions:
+                    el.tagName.toLowerCase() !== "select"
+                      ? []
+                      : Array.from(el.selectedOptions).map((o) => o.value),
                 })),
             },
           ]),
         );
       });
+
       const valid_form_id = (await classifyFormsAI(forms))?.form_index;
       if (valid_form_id == undefined) continue;
+
       const valid_form = forms[valid_form_id];
       const mapping = await mapFormToValues(valid_form, values);
-      if (!mapping || Object.keys(mapping).length === 0) {
-        continue;
-      }
+      if (!mapping || Object.keys(mapping).length === 0) continue;
+
       await page.evaluate(
         ({ index }) => {
-          const form = document.querySelectorAll("form")[index];
-          form?.scrollIntoView({
-            behavior: "smooth",
-            block: "center",
-            inline: "center",
-          });
+          document
+            .querySelectorAll("form")
+            [index]?.scrollIntoView({ behavior: "smooth", block: "center" });
         },
         { index: Number(valid_form_id) },
       );
 
-      // browser side: mark fields
       await page.evaluate(
         ({ mapping, index }) => {
           const form = document.querySelectorAll("form")[index];
           const els = [
             ...form.querySelectorAll("input, textarea, select"),
           ].filter((el) => !el.disabled && el.type !== "hidden");
-
-          for (const [fid, value] of Object.entries(mapping)) {
+          for (const [fid] of Object.entries(mapping)) {
             const i = Number(fid.replace("f", ""));
             if (els[i]?.getAttribute("type") === "submit") continue;
-            if (!els[i]?.getAttribute("data-ai-fill-id")) {
+            if (!els[i]?.getAttribute("data-ai-fill-id"))
               els[i]?.setAttribute("data-ai-fill-id", fid);
-            }
           }
         },
-        { mapping: mapping, index: Number(valid_form_id) },
+        { mapping, index: Number(valid_form_id) },
       );
-      // node side: type
+
       for (const [fid, value] of Object.entries(mapping)) {
         const sel = `[data-ai-fill-id="${fid}"]`;
         try {
           await page.waitForSelector(sel, { timeout: 2000 });
           const locator = page.locator(sel);
+          const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
+          const type = await locator.evaluate((el) => el.type);
 
-          const meta = await locator.evaluate((el) => ({
-            tag: el.tagName.toLowerCase(),
-            type: el.type,
-            multiple: el.multiple,
-          }));
-
-          // Checkbox
-          if (meta.type === "checkbox") {
+          if (type === "checkbox") {
             const checked = await locator.isChecked();
             if (checked !== Boolean(value)) await locator.click();
-          }
-
-          // Radio
-          else if (meta.type === "radio") {
+          } else if (type === "radio") {
             if (value === true) await locator.click();
-          }
-
-          // Select
-          else if (meta.tag === "select") {
-            const vals = Array.isArray(value) ? value : [value];
-            await locator.selectOption(vals.map(String));
-          }
-
-          // Text-like
-          else {
+          } else if (tag === "select") {
+            await locator.selectOption(
+              (Array.isArray(value) ? value : [value]).map(String),
+            );
+          } else {
             await locator.fill(String(value));
           }
         } catch {
-          // DOM fallback
           const el = await page.$(sel);
           if (el) {
             await el.evaluate((node, value) => {
@@ -225,8 +255,7 @@ export async function run({
                 [...node.options].forEach((o) => {
                   o.selected = value.includes(o.value);
                 });
-              } else node.value = value;
-
+              } else node.value = String(value);
               node.dispatchEvent(new Event("input", { bubbles: true }));
               node.dispatchEvent(new Event("change", { bubbles: true }));
             }, value);
@@ -235,28 +264,25 @@ export async function run({
 
         await setTimeout(300 + Math.random() * 700);
       }
-      await setTimeout(3000);
 
+      await setTimeout(3000);
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_before.png`),
         fullPage: true,
       });
 
-      const { error: captchaError } = await page.solveRecaptchas();
-      if (captchaError) {
-        throw new Error(`Failed to solve recaptcha: ${captchaError.error}`);
-      }
-
+      await solveRecaptcha(page);
       await submitFormSmart(page, Number(valid_form_id));
 
       await Promise.race([
         page.waitForNavigation({ timeout: 5000 }).catch(() => null),
         page
-          .waitForResponse((res) => res.status() >= 200 && res.status() < 400, {
+          .waitForResponse((r) => r.status() >= 200 && r.status() < 400, {
             timeout: 5000,
           })
           .catch(() => null),
       ]);
+
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: true,
@@ -272,7 +298,6 @@ export async function run({
         fullPage: true,
       });
     } catch {}
-
     throw err;
   } finally {
     await browser.close();

@@ -17,9 +17,12 @@
     "express": "^5.2.1",
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.12",
+    "playwright": "^1.59.1",
     "puppeteer": "^24.34.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-recaptcha": "^3.6.8",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "rebrowser-patches": "^1.0.19",
+    "rebrowser-puppeteer": "^24.8.1"
   }
 }
