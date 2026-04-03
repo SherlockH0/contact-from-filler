@@ -1,9 +1,7 @@
 import "dotenv/config";
-import RecaptchaPlugin from "puppeteer-extra-plugin-recaptcha";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
-import puppeteer from "puppeteer-extra";
 import {
   TWO_CAPTCHA,
   SCREENSHOT_DIR,
@@ -13,9 +11,6 @@ import {
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
 import { setTimeout } from "node:timers/promises";
-
-puppeteer.use(StealthPlugin());
-puppeteer.use(RecaptchaPlugin(TWO_CAPTCHA));
 
 if (!fs.existsSync(SCREENSHOT_DIR))
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -92,44 +87,34 @@ export async function run({
   };
   const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
-  const proxy_args = PROXY.url ? [`--proxy-server=${PROXY.url}`] : [];
-  const browser = await puppeteer.launch({
+  const browser = await chromium.launch({
     headless: HEADLESS,
-    executablePath:
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    args: ["--no-sandbox", "--disable-setuid-sandbox", ...proxy_args],
+    proxy: PROXY.url
+      ? {
+          server: PROXY.url,
+          username: PROXY.username,
+          password: PROXY.password,
+        }
+      : undefined,
   });
 
-  const page = await browser.newPage();
-  if (PROXY.url) {
-    if (!PROXY.username || !PROXY.password)
-      throw new Error(
-        "PROXY_USERNAME and PROXY_PASSWORD must be set if PROXY_URL is set",
-      );
-    await page.authenticate({
-      password: PROXY.password,
-      username: PROXY.username,
-    });
-  }
-
-  const client = await page.createCDPSession();
-  await client.send("Network.setUserAgentOverride", {
+  const context = await browser.newContext({
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    platform: "Win32",
-    acceptLanguage: "en-US,en;q=0.9",
+    locale: "en-US",
+    viewport: {
+      width: 1200 + Math.floor(Math.random() * 200),
+      height: 800 + Math.floor(Math.random() * 200),
+    },
   });
 
-  await page.setViewport({
-    width: 1200 + Math.floor(Math.random() * 200),
-    height: 800 + Math.floor(Math.random() * 200),
-  });
+  const page = await context.newPage();
 
   try {
     const res = await page.goto(startUrl, { waitUntil: "domcontentloaded" });
     console.log(`[GOTO] status=${res?.status()} url=${res?.url()}`);
 
-    const links = (await page.$$eval("a", (as) => as.map((a) => a.href))) || [];
+    const links = await page.$$eval("a", (as) => as.map((a) => a.href));
     const contactPages = [...filterContactLinks(links), startUrl];
 
     for (const p of contactPages) {
@@ -230,7 +215,7 @@ export async function run({
         const sel = `[data-ai-fill-id="${fid}"]`;
         try {
           await page.waitForSelector(sel, { timeout: 2000 });
-          const locator = page.locator(sel);
+          const locator = page.locator(sel).first();
           const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
           const type = await locator.evaluate((el) => el.type);
 
@@ -247,9 +232,10 @@ export async function run({
             await locator.fill(String(value));
           }
         } catch {
-          const el = await page.$(sel);
-          if (el) {
-            await el.evaluate((node, value) => {
+          await page.evaluate(
+            ({ sel, value }) => {
+              const node = document.querySelector(sel);
+              if (!node) return;
               if (node.type === "checkbox") node.checked = Boolean(value);
               else if (node.multiple && Array.isArray(value)) {
                 [...node.options].forEach((o) => {
@@ -258,8 +244,9 @@ export async function run({
               } else node.value = String(value);
               node.dispatchEvent(new Event("input", { bubbles: true }));
               node.dispatchEvent(new Event("change", { bubbles: true }));
-            }, value);
-          }
+            },
+            { sel, value },
+          );
         }
 
         await setTimeout(300 + Math.random() * 700);
@@ -282,6 +269,8 @@ export async function run({
           })
           .catch(() => null),
       ]);
+
+      await setTimeout(2000);
 
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
