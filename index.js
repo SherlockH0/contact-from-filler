@@ -11,53 +11,327 @@ import {
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
 import { setTimeout } from "node:timers/promises";
+import TwoCaptcha from "@2captcha/captcha-solver";
+
+const solver = new TwoCaptcha.Solver(TWO_CAPTCHA.provider.token);
 
 if (!fs.existsSync(SCREENSHOT_DIR))
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
-async function solveRecaptcha(page) {
-  if (!TWO_CAPTCHA?.token) return;
+const MAX_CAPTCHA_RETRIES = 2;
+async function waitForSubmissionSuccess(page) {
+  try {
+    await page.waitForFunction(
+      () => {
+        const text = document.body.innerText.toLowerCase();
 
-  const sitekey = await page
-    .$eval(".g-recaptcha", (el) => el.getAttribute("data-sitekey") ?? "")
-    .catch(() => null);
-  if (!sitekey) return;
+        return (
+          text.includes("thank you") ||
+          text.includes("success") ||
+          text.includes("received") ||
+          text.includes("we will contact you")
+        );
+      },
+      { timeout: 8000 },
+    );
 
-  const pageUrl = page.url();
-
-  const submitRes = await fetch(
-    `https://2captcha.com/in.php?key=${TWO_CAPTCHA.token}&method=userrecaptcha&googlekey=${sitekey}&pageurl=${pageUrl}&json=1`,
-  ).then((r) => r.json());
-  if (submitRes.status !== 1)
-    throw new Error(`2captcha submit failed: ${submitRes.request}`);
-
-  const taskId = submitRes.request;
-  let token = null;
-
-  for (let i = 0; i < 24; i++) {
-    await setTimeout(5000);
-    const pollRes = await fetch(
-      `https://2captcha.com/res.php?key=${TWO_CAPTCHA.token}&action=get&id=${taskId}&json=1`,
-    ).then((r) => r.json());
-    if (pollRes.status === 1) {
-      token = pollRes.request;
-      break;
-    }
-    if (pollRes.request !== "CAPCHA_NOT_READY")
-      throw new Error(`2captcha poll failed: ${pollRes.request}`);
+    return true;
+  } catch {
+    return false;
   }
-
-  if (!token) throw new Error("2captcha timed out");
-
-  await page.evaluate((t) => {
-    const el = document.getElementById("g-recaptcha-response");
-    if (el) {
-      el.value = t;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  }, token);
 }
 
+function isHoneypot(el) {
+  const style = window.getComputedStyle(el);
+
+  return (
+    el.type === "hidden" ||
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    el.offsetParent === null ||
+    ["website", "url", "fax"].some((name) =>
+      (el.name || "").toLowerCase().includes(name),
+    )
+  );
+}
+const log = {
+  info: (msg) => console.log(`[CAPTCHA] ${msg}`),
+  warn: (msg) => console.warn(`[CAPTCHA] ⚠  ${msg}`),
+  error: (msg) => console.error(`[CAPTCHA] ✖  ${msg}`),
+  ok: (msg) => console.log(`[CAPTCHA] ✔  ${msg}`),
+};
+
+async function solveCaptcha(page) {
+  const url = page.url();
+  log.info(`Scanning for captcha on ${url}`);
+
+  // ── reCAPTCHA v3 ────────────────────────────────────────────────────────────
+  const v3sitekey = await page.evaluate(() => {
+    const scripts = [...document.querySelectorAll("script[src]")];
+    for (const s of scripts) {
+      const match = s.src.match(/render=([^&]+)/);
+      if (match && match[1] !== "explicit") return match[1];
+    }
+    return null;
+  });
+
+  if (v3sitekey) {
+    const action = await page.evaluate(
+      () =>
+        document.querySelector("[data-action]")?.getAttribute("data-action") ??
+        "submit",
+    );
+    log.info(
+      `reCAPTCHA v3 detected (action="${action}", sitekey=${v3sitekey.slice(0, 12)}…)`,
+    );
+
+    for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
+      log.info(
+        `reCAPTCHA v3 — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
+      );
+      const { data: token } = await solver.recaptcha({
+        googlekey: v3sitekey,
+        pageurl: url,
+        version: "v3",
+        action,
+        score: 0.9,
+      });
+      log.info(`reCAPTCHA v3 — token received (${token.slice(0, 16)}…)`);
+
+      await page.evaluate((t) => {
+        document
+          .querySelectorAll(
+            "input[name=recaptcha_token], input[name=g-recaptcha-response]",
+          )
+          .forEach((el) => (el.value = t));
+
+        if (typeof window.recaptchaCallback === "function")
+          window.recaptchaCallback(t);
+
+        const clients = window.__grecaptcha_cfg?.clients ?? {};
+        for (const client of Object.values(clients)) {
+          for (const val of Object.values(client)) {
+            if (val && typeof val.callback === "function") {
+              try {
+                val.callback(t);
+              } catch {}
+            }
+          }
+        }
+      }, token);
+
+      const reacted = await Promise.race([
+        page
+          .waitForNavigation({ timeout: 3000 })
+          .then(() => true)
+          .catch(() => false),
+        page
+          .waitForFunction(
+            () =>
+              document.querySelector(".grecaptcha-badge")?.style?.visibility ===
+              "hidden",
+            { timeout: 3000 },
+          )
+          .then(() => true)
+          .catch(() => false),
+      ]);
+
+      if (reacted) {
+        log.ok(`reCAPTCHA v3 — page reacted, token accepted`);
+        break;
+      } else {
+        log.warn(
+          `reCAPTCHA v3 — no page reaction on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
+        );
+      }
+    }
+
+    // v3 doesn't preclude a v2 widget being present too — fall through
+  }
+
+  // ── reCAPTCHA v2 ────────────────────────────────────────────────────────────
+  const v2sitekey = await page
+    .$eval(".g-recaptcha, [data-sitekey]", (el) =>
+      el.getAttribute("data-sitekey"),
+    )
+    .catch(() => null);
+
+  if (v2sitekey) {
+    log.info(`reCAPTCHA v2 detected (sitekey=${v2sitekey.slice(0, 12)}…)`);
+
+    for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
+      log.info(
+        `reCAPTCHA v2 — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
+      );
+      const { data: token } = await solver.recaptcha({
+        googlekey: v2sitekey,
+        pageurl: url,
+      });
+      log.info(`reCAPTCHA v2 — token received (${token.slice(0, 16)}…)`);
+
+      const injected = await page.evaluate((t) => {
+        const el = document.getElementById("g-recaptcha-response");
+        if (el) {
+          el.value = t;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        const clients = window.___grecaptcha_cfg?.clients ?? {};
+        for (const client of Object.values(clients)) {
+          for (const val of Object.values(client)) {
+            if (val && typeof val.callback === "function") {
+              try {
+                val.callback(t);
+                return true;
+              } catch {}
+            }
+          }
+        }
+        return !!el;
+      }, token);
+
+      if (injected) {
+        log.ok(`reCAPTCHA v2 — token injected`);
+        break;
+      } else {
+        log.warn(
+          `reCAPTCHA v2 — injection failed on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
+        );
+      }
+    }
+    return;
+  }
+
+  // ── hCaptcha ─────────────────────────────────────────────────────────────────
+  const hkey = await page
+    .$eval(
+      ".h-captcha, [data-hcaptcha-sitekey]",
+      (el) =>
+        el.getAttribute("data-sitekey") ??
+        el.getAttribute("data-hcaptcha-sitekey"),
+    )
+    .catch(() => null);
+
+  if (hkey) {
+    log.info(`hCaptcha detected (sitekey=${hkey.slice(0, 12)}…)`);
+
+    for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
+      log.info(
+        `hCaptcha — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
+      );
+      const { data: token } = await solver.hcaptcha({
+        sitekey: hkey,
+        pageurl: url,
+      });
+      log.info(`hCaptcha — token received (${token.slice(0, 16)}…)`);
+
+      const injected = await page.evaluate((t) => {
+        const el = document.querySelector("[name=h-captcha-response]");
+        if (el) {
+          el.value = t;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        if (typeof window.hcaptcha !== "undefined") {
+          try {
+            window.hcaptcha.submit();
+            return true;
+          } catch {}
+        }
+        return !!el;
+      }, token);
+
+      if (injected) {
+        log.ok(`hCaptcha — token injected`);
+        break;
+      } else {
+        log.warn(
+          `hCaptcha — injection failed on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
+        );
+      }
+    }
+    return;
+  }
+
+  // ── Cloudflare Turnstile ─────────────────────────────────────────────────────
+  const tskey = await page
+    .$eval(
+      ".cf-turnstile, [data-cf-turnstile-sitekey]",
+      (el) =>
+        el.getAttribute("data-sitekey") ??
+        el.getAttribute("data-cf-turnstile-sitekey"),
+    )
+    .catch(() => null);
+
+  if (tskey) {
+    log.info(`Cloudflare Turnstile detected (sitekey=${tskey.slice(0, 12)}…)`);
+
+    for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
+      log.info(
+        `Turnstile — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
+      );
+      const { data: token } = await solver.cloudflareTurnstile({
+        sitekey: tskey,
+        pageurl: url,
+      });
+      log.info(`Turnstile — token received (${token.slice(0, 16)}…)`);
+
+      const injected = await page.evaluate((t) => {
+        const el = document.querySelector("[name=cf-turnstile-response]");
+        if (el) {
+          el.value = t;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        const cb = window.turnstileCallback ?? window.onTurnstileSuccess;
+        if (typeof cb === "function") {
+          try {
+            cb(t);
+            return true;
+          } catch {}
+        }
+        return !!el;
+      }, token);
+
+      if (injected) {
+        log.ok(`Turnstile — token injected`);
+        break;
+      } else {
+        log.warn(
+          `Turnstile — injection failed on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
+        );
+      }
+    }
+    return;
+  }
+
+  log.warn(`No captcha detected on ${url}`);
+  return null;
+}
+
+async function moveMouseHuman(page, targetBox) {
+  const { x, y, width, height } = targetBox;
+
+  const targetX = x + width / 2 + (Math.random() - 0.5) * 10;
+  const targetY = y + height / 2 + (Math.random() - 0.5) * 10;
+
+  const steps = 15 + Math.floor(Math.random() * 10);
+
+  const start = await page.mouse.position();
+  const startX = start?.x ?? Math.random() * 300;
+  const startY = start?.y ?? Math.random() * 300;
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+
+    // ease-in-out curve (less robotic)
+    const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+    const curX = startX + (targetX - startX) * ease + (Math.random() - 0.5) * 2;
+    const curY = startY + (targetY - startY) * ease + (Math.random() - 0.5) * 2;
+
+    await page.mouse.move(curX, curY);
+    await page.waitForTimeout(5 + Math.random() * 15);
+  }
+}
 export async function run({
   input: {
     startUrl,
@@ -139,7 +413,18 @@ export async function run({
               fields: Array.from(
                 form.querySelectorAll("input, textarea, select"),
               )
-                .filter((el) => !el.disabled && el.type !== "hidden")
+                .filter((el) => {
+                  const style = window.getComputedStyle(el);
+                  return !(
+                    el.type === "hidden" ||
+                    style.display === "none" ||
+                    style.visibility === "hidden" ||
+                    el.offsetParent === null ||
+                    ["website", "url", "fax"].some((n) =>
+                      (el.name || "").toLowerCase().includes(n),
+                    )
+                  );
+                })
                 .map((el, i) => ({
                   id: `f${i}`,
                   tag: el.tagName.toLowerCase(),
@@ -219,6 +504,9 @@ export async function run({
           const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
           const type = await locator.evaluate((el) => el.type);
 
+          const box = await locator.boundingBox();
+          if (box) await moveMouseHuman(page, box);
+
           if (type === "checkbox") {
             const checked = await locator.isChecked();
             if (checked !== Boolean(value)) await locator.click();
@@ -229,7 +517,9 @@ export async function run({
               (Array.isArray(value) ? value : [value]).map(String),
             );
           } else {
-            await locator.fill(String(value));
+            await locator.pressSequentially(value, {
+              delay: 50 + Math.random() * 120,
+            });
           }
         } catch {
           await page.evaluate(
@@ -258,7 +548,7 @@ export async function run({
         fullPage: true,
       });
 
-      await solveRecaptcha(page);
+      await solveCaptcha(page);
       await submitFormSmart(page, Number(valid_form_id));
 
       await Promise.race([
@@ -271,12 +561,17 @@ export async function run({
       ]);
 
       await setTimeout(2000);
+      const success = await waitForSubmissionSuccess(page);
 
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: true,
       });
-      return { status: "success", url: startUrl, submitted: true };
+      return {
+        status: "success",
+        url: startUrl,
+        submitted: success,
+      };
     }
 
     return { status: "not_found", url: startUrl, submitted: false };
