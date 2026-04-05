@@ -41,19 +41,6 @@ async function waitForSubmissionSuccess(page) {
   }
 }
 
-function isHoneypot(el) {
-  const style = window.getComputedStyle(el);
-
-  return (
-    el.type === "hidden" ||
-    style.display === "none" ||
-    style.visibility === "hidden" ||
-    el.offsetParent === null ||
-    ["website", "url", "fax"].some((name) =>
-      (el.name || "").toLowerCase().includes(name),
-    )
-  );
-}
 const log = {
   info: (msg) => console.log(`[CAPTCHA] ${msg}`),
   warn: (msg) => console.warn(`[CAPTCHA] ⚠  ${msg}`),
@@ -61,6 +48,8 @@ const log = {
   ok: (msg) => console.log(`[CAPTCHA] ✔  ${msg}`),
 };
 
+const isValidSitekey = (key) =>
+  typeof key === "string" && /^[\w-]{20,}$/.test(key);
 async function solveCaptcha(page) {
   const url = page.url();
   log.info(`Scanning for captcha on ${url}`);
@@ -75,7 +64,7 @@ async function solveCaptcha(page) {
     return null;
   });
 
-  if (v3sitekey) {
+  if (v3sitekey && isValidSitekey(v3sitekey)) {
     const action = await page.evaluate(
       () =>
         document.querySelector("[data-action]")?.getAttribute("data-action") ??
@@ -85,78 +74,52 @@ async function solveCaptcha(page) {
       `reCAPTCHA v3 detected (action="${action}", sitekey=${v3sitekey.slice(0, 12)}…)`,
     );
 
-    for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
-      log.info(
-        `reCAPTCHA v3 — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
-      );
-      const { data: token } = await solver.recaptcha({
-        googlekey: v3sitekey,
-        pageurl: url,
-        version: "v3",
-        action,
-        score: 0.9,
-      });
-      log.info(`reCAPTCHA v3 — token received (${token.slice(0, 16)}…)`);
+    log.info(`reCAPTCHA v3 — solving…`);
+    const { data: token } = await solver.recaptcha({
+      googlekey: v3sitekey,
+      pageurl: url,
+      version: "v3",
+      action,
+      score: 0.9,
+    });
+    log.info(`reCAPTCHA v3 — token received (${token.slice(0, 16)}…)`);
 
-      await page.evaluate((t) => {
-        document
-          .querySelectorAll(
-            "input[name=recaptcha_token], input[name=g-recaptcha-response]",
-          )
-          .forEach((el) => (el.value = t));
+    await page.evaluate((t) => {
+      document
+        .querySelectorAll(
+          "input[name=recaptcha_token], input[name=g-recaptcha-response]",
+        )
+        .forEach((el) => (el.value = t));
 
-        if (typeof window.recaptchaCallback === "function")
-          window.recaptchaCallback(t);
+      if (typeof window.recaptchaCallback === "function")
+        window.recaptchaCallback(t);
 
-        const clients = window.__grecaptcha_cfg?.clients ?? {};
-        for (const client of Object.values(clients)) {
-          for (const val of Object.values(client)) {
-            if (val && typeof val.callback === "function") {
-              try {
-                val.callback(t);
-              } catch {}
-            }
+      const clients = window.__grecaptcha_cfg?.clients ?? {};
+      for (const client of Object.values(clients)) {
+        for (const val of Object.values(client)) {
+          if (val && typeof val.callback === "function") {
+            try {
+              val.callback(t);
+            } catch {}
           }
         }
-      }, token);
-
-      const reacted = await Promise.race([
-        page
-          .waitForNavigation({ timeout: 3000 })
-          .then(() => true)
-          .catch(() => false),
-        page
-          .waitForFunction(
-            () =>
-              document.querySelector(".grecaptcha-badge")?.style?.visibility ===
-              "hidden",
-            { timeout: 3000 },
-          )
-          .then(() => true)
-          .catch(() => false),
-      ]);
-
-      if (reacted) {
-        log.ok(`reCAPTCHA v3 — page reacted, token accepted`);
-        break;
-      } else {
-        log.warn(
-          `reCAPTCHA v3 — no page reaction on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
-        );
       }
-    }
+    }, token);
 
+    log.ok(`reCAPTCHA v3 — token injected`);
     // v3 doesn't preclude a v2 widget being present too — fall through
   }
+  let handled = !!v3sitekey;
 
   // ── reCAPTCHA v2 ────────────────────────────────────────────────────────────
   const v2sitekey = await page
-    .$eval(".g-recaptcha, [data-sitekey]", (el) =>
-      el.getAttribute("data-sitekey"),
-    )
+    .$eval(".g-recaptcha, [data-sitekey]", (el) => {
+      const key = el.getAttribute("data-sitekey");
+      return key?.startsWith("6L") ? key : null;
+    })
     .catch(() => null);
 
-  if (v2sitekey) {
+  if (v2sitekey && isValidSitekey(v2sitekey)) {
     log.info(`reCAPTCHA v2 detected (sitekey=${v2sitekey.slice(0, 12)}…)`);
 
     for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
@@ -203,7 +166,13 @@ async function solveCaptcha(page) {
   }
 
   // ── hCaptcha ─────────────────────────────────────────────────────────────────
+  const isTurnstile = await page.evaluate(() =>
+    [...document.querySelectorAll("script[src]")].some((s) =>
+      s.src.includes("challenges.cloudflare.com"),
+    ),
+  );
   const hkey = await page
+
     .$eval(
       ".h-captcha, [data-hcaptcha-sitekey]",
       (el) =>
@@ -213,43 +182,49 @@ async function solveCaptcha(page) {
     .catch(() => null);
 
   if (hkey) {
-    log.info(`hCaptcha detected (sitekey=${hkey.slice(0, 12)}…)`);
-
-    for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
+    if (isTurnstile) {
       log.info(
-        `hCaptcha — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
+        `Skipping hCaptcha — Turnstile script detected, deferring to Turnstile handler`,
       );
-      const { data: token } = await solver.hcaptcha({
-        sitekey: hkey,
-        pageurl: url,
-      });
-      log.info(`hCaptcha — token received (${token.slice(0, 16)}…)`);
+    } else {
+      log.info(`hCaptcha detected (sitekey=${hkey.slice(0, 12)}…)`);
 
-      const injected = await page.evaluate((t) => {
-        const el = document.querySelector("[name=h-captcha-response]");
-        if (el) {
-          el.value = t;
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        if (typeof window.hcaptcha !== "undefined") {
-          try {
-            window.hcaptcha.submit();
-            return true;
-          } catch {}
-        }
-        return !!el;
-      }, token);
-
-      if (injected) {
-        log.ok(`hCaptcha — token injected`);
-        break;
-      } else {
-        log.warn(
-          `hCaptcha — injection failed on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
+      for (let attempt = 1; attempt <= MAX_CAPTCHA_RETRIES; attempt++) {
+        log.info(
+          `hCaptcha — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
         );
+        const { data: token } = await solver.hcaptcha({
+          sitekey: hkey,
+          pageurl: url,
+        });
+        log.info(`hCaptcha — token received (${token.slice(0, 16)}…)`);
+
+        const injected = await page.evaluate((t) => {
+          const el = document.querySelector("[name=h-captcha-response]");
+          if (el) {
+            el.value = t;
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          if (typeof window.hcaptcha !== "undefined") {
+            try {
+              window.hcaptcha.submit();
+              return true;
+            } catch {}
+          }
+          return !!el;
+        }, token);
+
+        if (injected) {
+          log.ok(`hCaptcha — token injected`);
+          break;
+        } else {
+          log.warn(
+            `hCaptcha — injection failed on attempt ${attempt}, ${attempt < MAX_CAPTCHA_RETRIES ? "retrying" : "giving up"}`,
+          );
+        }
       }
+      return;
     }
-    return;
   }
 
   // ── Cloudflare Turnstile ─────────────────────────────────────────────────────
@@ -260,7 +235,7 @@ async function solveCaptcha(page) {
         el.getAttribute("data-sitekey") ??
         el.getAttribute("data-cf-turnstile-sitekey"),
     )
-    .catch(() => null);
+    .catch(() => (isTurnstile ? hkey : null)); // fall back to the UUID we already found
 
   if (tskey) {
     log.info(`Cloudflare Turnstile detected (sitekey=${tskey.slice(0, 12)}…)`);
@@ -303,7 +278,7 @@ async function solveCaptcha(page) {
     return;
   }
 
-  log.warn(`No captcha detected on ${url}`);
+  if (!handled) log.warn(`No captcha detected on ${url}`);
   return null;
 }
 
@@ -332,6 +307,15 @@ async function moveMouseHuman(page, targetBox) {
     await page.waitForTimeout(5 + Math.random() * 15);
   }
 }
+const disableAnimations = (page) =>
+  page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `*, *::before, *::after {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }`;
+    document.head.appendChild(style);
+  });
 export async function run({
   input: {
     startUrl,
@@ -393,11 +377,21 @@ export async function run({
 
     for (const p of contactPages) {
       await page.goto(p, { waitUntil: "domcontentloaded" });
-      try {
-        await page.waitForSelector("form", { timeout: 10000 });
-      } catch {
-        continue;
-      }
+      await page.evaluate(() => {
+        document
+          .querySelectorAll("form")
+          .forEach((f) => f.scrollIntoView({ behavior: "instant" }));
+      });
+      await page.waitForTimeout(500);
+      await page.evaluate(() => {
+        document
+          .querySelectorAll(".scroll-trigger, .animate--slide-in")
+          .forEach((el) => {
+            el.style.opacity = "1";
+            el.style.visibility = "visible";
+            el.style.transform = "none";
+          });
+      });
 
       const forms = await page.evaluate(() => {
         function labelText(el) {
@@ -417,9 +411,10 @@ export async function run({
                   const style = window.getComputedStyle(el);
                   return !(
                     el.type === "hidden" ||
+                    el.type === "file" ||
                     style.display === "none" ||
                     style.visibility === "hidden" ||
-                    el.offsetParent === null ||
+                    // el.offsetParent === null ||
                     ["website", "url", "fax"].some((n) =>
                       (el.name || "").toLowerCase().includes(n),
                     )
@@ -485,7 +480,20 @@ export async function run({
           const form = document.querySelectorAll("form")[index];
           const els = [
             ...form.querySelectorAll("input, textarea, select"),
-          ].filter((el) => !el.disabled && el.type !== "hidden");
+          ].filter((el) => {
+            const style = window.getComputedStyle(el);
+            return !(
+              el.disabled ||
+              el.type === "hidden" ||
+              el.type === "file" ||
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              // el.offsetParent === null ||
+              ["website", "url", "fax"].some((n) =>
+                (el.name || "").toLowerCase().includes(n),
+              )
+            );
+          });
           for (const [fid] of Object.entries(mapping)) {
             const i = Number(fid.replace("f", ""));
             if (els[i]?.getAttribute("type") === "submit") continue;
@@ -517,9 +525,13 @@ export async function run({
               (Array.isArray(value) ? value : [value]).map(String),
             );
           } else {
-            await locator.pressSequentially(value, {
-              delay: 50 + Math.random() * 120,
-            });
+            if (String(value).length > 20 || tag === "textarea") {
+              await locator.pressSequentially(String(value), {
+                delay: 40 + Math.random() * 120,
+              });
+            } else {
+              await locator.fill(String(value));
+            }
           }
         } catch {
           await page.evaluate(
@@ -543,34 +555,71 @@ export async function run({
       }
 
       await setTimeout(3000);
+      await disableAnimations(page);
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_before.png`),
-        fullPage: true,
+        fullPage: false,
+        animations: "disabled",
       });
 
       await solveCaptcha(page);
-      await submitFormSmart(page, Number(valid_form_id));
+      const formAction = await page.evaluate(
+        (i) => document.querySelectorAll("form")[i]?.action,
+        valid_form_id,
+      );
 
-      await Promise.race([
-        page.waitForNavigation({ timeout: 5000 }).catch(() => null),
-        page
-          .waitForResponse((r) => r.status() >= 200 && r.status() < 400, {
-            timeout: 5000,
-          })
-          .catch(() => null),
+      const urlBeforeSubmit = page.url();
+      const [, networkOk] = await Promise.all([
+        submitFormSmart(page, Number(valid_form_id)),
+        Promise.race([
+          page
+            .waitForNavigation({ timeout: 5000 })
+            .then(() => false)
+            .catch(() => false),
+          page
+            .waitForResponse(
+              (r) =>
+                r.url() === formAction && r.status() >= 200 && r.status() < 400,
+              { timeout: 5000 },
+            )
+            .then(() => true)
+            .catch(() => false),
+        ]),
       ]);
+      const urlChanged = page.url() !== urlBeforeSubmit;
+      const isThankYouPage = /thank.?you|confirm|success/i.test(page.url());
+      const formGone = await page
+        .$(`form:nth-of-type(${valid_form_id + 1})`)
+        .then((el) => !el)
+        .catch(() => true);
+      const happyText = await waitForSubmissionSuccess(page);
 
       await setTimeout(2000);
-      const success = await waitForSubmissionSuccess(page);
-
+      await disableAnimations(page);
       await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
-        fullPage: true,
+        fullPage: false,
+        animations: "disabled",
       });
       return {
         status: "success",
         url: startUrl,
-        submitted: success,
+        submitted:
+          networkOk || urlChanged || formGone || happyText || isThankYouPage,
+        confidence: [
+          networkOk,
+          urlChanged,
+          formGone,
+          happyText,
+          isThankYouPage,
+        ].filter(Boolean).length,
+        signals: {
+          networkOk,
+          urlChanged,
+          formGone,
+          happyText,
+          isThankYouPage,
+        },
       };
     }
 
