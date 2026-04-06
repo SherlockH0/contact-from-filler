@@ -532,7 +532,6 @@ export async function run({
           ]),
         );
       });
-      console.log(forms);
 
       const valid_form_id = (await classifyFormsAI(forms))?.form_index;
       if (valid_form_id == undefined) continue;
