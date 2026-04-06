@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
 import fs from "fs";
 import path from "path";
 import {
@@ -12,6 +13,7 @@ import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
 import { setTimeout } from "node:timers/promises";
 import TwoCaptcha from "@2captcha/captcha-solver";
+chromium.use(stealth());
 
 const solver = new TwoCaptcha.Solver(TWO_CAPTCHA.provider.token);
 
@@ -346,6 +348,7 @@ export async function run({
   const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
   const browser = await chromium.launch({
+    args: ["--disable-blink-features=AutomationControlled"],
     headless: HEADLESS,
     proxy: PROXY.url
       ? {
@@ -365,7 +368,55 @@ export async function run({
       height: 800 + Math.floor(Math.random() * 200),
     },
   });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", {
+      get: () => undefined,
+    });
+  });
 
+  await context.addInitScript(() => {
+    window.addEventListener("error", (e) => {
+      console.log("[IGNORED ERROR]", e.message);
+      e.preventDefault();
+    });
+
+    window.addEventListener("unhandledrejection", (e) => {
+      console.log("[IGNORED PROMISE]", e.reason);
+      e.preventDefault();
+    });
+  });
+  await context.addInitScript(() => {
+    // reCAPTCHA
+    window.grecaptcha = window.grecaptcha || {
+      render: () => "mock",
+      execute: () => Promise.resolve("mock"),
+      ready: (cb) => cb(),
+      getResponse: () => "mock",
+    };
+
+    // hCaptcha
+    window.hcaptcha = window.hcaptcha || {
+      render: () => "mock",
+      execute: () => Promise.resolve("mock"),
+      getResponse: () => "mock",
+    };
+
+    // Cloudflare Turnstile
+    window.turnstile = window.turnstile || {
+      render: () => "mock",
+    };
+
+    // Google Maps (VERY common crash source)
+    window.google = window.google || {};
+    window.google.maps = window.google.maps || {};
+
+    // Analytics (can break apps if blocked)
+    window.dataLayer = window.dataLayer || [];
+    window.gtag = window.gtag || function () {};
+
+    // Missing callback patterns
+    window.onRecaptchaLoaded = window.onRecaptchaLoaded || (() => {});
+  });
   const page = await context.newPage();
 
   try {
@@ -377,6 +428,29 @@ export async function run({
 
     for (const p of contactPages) {
       await page.goto(p, { waitUntil: "domcontentloaded" });
+
+      // wait for React/Vue/etc to mount
+      await page.waitForFunction(
+        () => {
+          const root = document.querySelector("#root");
+          return root && root.innerText.trim().length > 0;
+        },
+        { timeout: 10000 },
+      );
+
+      // optional: wait for forms specifically
+      await Promise.race([
+        page.waitForSelector("form", { timeout: 5000 }),
+        page.waitForTimeout(3000),
+      ]);
+      await page.mouse.move(100, 100);
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(1000);
+      await page.evaluate(() => {
+        window.scrollBy(0, window.innerHeight);
+      });
+      await page.waitForTimeout(1000);
       await page.evaluate(() => {
         document
           .querySelectorAll("form")
@@ -458,6 +532,7 @@ export async function run({
           ]),
         );
       });
+      console.log(forms);
 
       const valid_form_id = (await classifyFormsAI(forms))?.form_index;
       if (valid_form_id == undefined) continue;
