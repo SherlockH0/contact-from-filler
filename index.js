@@ -418,25 +418,18 @@ export async function run({
     window.onRecaptchaLoaded = window.onRecaptchaLoaded || (() => {});
   });
   const page = await context.newPage();
+  // playwright-extra drops per-call timeout options; set a safe global default
+  page.setDefaultTimeout(15000);
 
   try {
-    const res = await page.goto(startUrl, { waitUntil: "domcontentloaded" });
+    const res = await page.goto(startUrl, { waitUntil: "commit", timeout: 15000 });
     console.log(`[GOTO] status=${res?.status()} url=${res?.url()}`);
 
     const links = await page.$$eval("a", (as) => as.map((a) => a.href));
     const contactPages = [...filterContactLinks(links), startUrl];
 
     for (const p of contactPages) {
-      await page.goto(p, { waitUntil: "domcontentloaded" });
-
-      // wait for React/Vue/etc to mount
-      await page.waitForFunction(
-        () => {
-          const root = document.querySelector("#root");
-          return root && root.innerText.trim().length > 0;
-        },
-        { timeout: 10000 },
-      );
+      await page.goto(p, { waitUntil: "commit", timeout: 15000 });
 
       // optional: wait for forms specifically
       await Promise.race([
