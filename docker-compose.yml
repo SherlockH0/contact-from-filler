@@ -1,22 +1,11 @@
-version: "3.8"
-
 services:
   cold-outreach:
     build: .
-    ports:
-      - "3000:3000"
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_URL=${OPENAI_URL}
-      - OPENAI_MODEL=${OPENAI_MODEL}
-      - TWOCAPTCHA_TOKEN=${TWOCAPTCHA_TOKEN}
-      - PROXY_URL=${PROXY_URL}
-      - PROXY_USERNAME=${PROXY_USERNAME}
-      - PROXY_PASSWORD=${PROXY_PASSWORD}
       - HEADLESS=${HEADLESS:-true}
-      - SCREENSHOT_DIR=/app/screenshots
-    volumes:
-      - ./screenshots:/app/screenshots
     networks:
       - n8n
 
