@@ -33,33 +33,33 @@ app.post("/run", async (req, res) => {
 
   console.log(`[START] startUrl=${startUrl} name=${name}`);
 
-  // try {
-  const result = await run({
-    input: {
-      startUrl,
-      name,
-      first_name,
-      last_name,
-      email,
-      message,
-      company,
-      phone,
-      subject,
-      unknown,
-      location,
-      userId,
-      leadId,
-    },
-  });
+  try {
+    const result = await run({
+      input: {
+        startUrl,
+        name,
+        first_name,
+        last_name,
+        email,
+        message,
+        company,
+        phone,
+        subject,
+        unknown,
+        location,
+        userId,
+        leadId,
+      },
+    });
 
-  console.log(
-    `[END] startUrl=${startUrl} status=${result.status} submitted=${result.submitted}`,
-  );
-  res.json({ success: result.status === "success", ...result });
-  // } catch (err) {
-  //   console.log(`[ERROR] startUrl=${startUrl} error=${err.message}`);
-  //   res.status(500).json({ success: false, error: err.message });
-  // }
+    console.log(
+      `[END] startUrl=${startUrl} status=${result.status} submitted=${result.submitted}`,
+    );
+    res.json({ success: result.status === "success", ...result });
+  } catch (err) {
+    console.log(`[ERROR] startUrl=${startUrl} error=${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
