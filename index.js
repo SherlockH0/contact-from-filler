@@ -22,7 +22,8 @@ async function waitForSubmissionSuccess(page) {
           text.includes("thank you") ||
           text.includes("success") ||
           text.includes("received") ||
-          text.includes("we will contact you")
+          text.includes("we will contact you") ||
+          text.includes("message sent")
         );
       },
       { timeout: 8000 },
@@ -635,8 +636,21 @@ export async function run({
             .catch(() => false),
           page
             .waitForResponse(
-              (r) =>
-                r.url() === formAction && r.status() >= 200 && r.status() < 400,
+              (r) => {
+                if (r.status() < 200 || r.status() >= 400) return false;
+                const req = r.request();
+                const isAsync =
+                  req.resourceType() === "fetch" ||
+                  req.resourceType() === "xhr";
+                if (!isAsync) return false;
+                if (formAction && r.url() === formAction) return true;
+                let sameOrigin = false;
+                try {
+                  sameOrigin =
+                    new URL(req.url()).origin === new URL(page.url()).origin;
+                } catch {}
+                return sameOrigin;
+              },
               { timeout: 5000 },
             )
             .then(() => true)

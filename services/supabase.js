@@ -16,12 +16,18 @@ export async function uploadSuccessScreenshot({ userId, leadId, pngBuffer }) {
   const fileName = `${randomUUID()}.png`;
   const storagePath = `outreach-proof/${userId}/${leadId}/${fileName}`;
 
+  const key = SUPABASE.serviceRoleKey;
+  const headers = {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+  };
+
   const uploadRes = await fetch(
     `${SUPABASE.url}/storage/v1/object/${BUCKET}/${storagePath}`,
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${SUPABASE.serviceRoleKey}`,
+        ...headers,
         "Content-Type": "image/png",
       },
       body: pngBuffer,
@@ -34,7 +40,7 @@ export async function uploadSuccessScreenshot({ userId, leadId, pngBuffer }) {
   const insertRes = await fetch(`${SUPABASE.url}/rest/v1/outreach_attachments`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${SUPABASE.serviceRoleKey}`,
+      ...headers,
       "Content-Type": "application/json",
       Prefer: "return=representation",
     },
