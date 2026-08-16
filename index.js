@@ -1,14 +1,7 @@
 import "dotenv/config";
 import { chromium } from "playwright-extra";
 import stealth from "puppeteer-extra-plugin-stealth";
-import fs from "fs";
-import path from "path";
-import {
-  TWO_CAPTCHA,
-  SCREENSHOT_DIR,
-  PROXY,
-  HEADLESS,
-} from "./utils/constants.js";
+import { TWO_CAPTCHA, PROXY, HEADLESS } from "./utils/constants.js";
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
 import { uploadSuccessScreenshot } from "./services/supabase.js";
@@ -17,9 +10,6 @@ import TwoCaptcha from "@2captcha/captcha-solver";
 chromium.use(stealth());
 
 const solver = new TwoCaptcha.Solver(TWO_CAPTCHA.provider.token);
-
-if (!fs.existsSync(SCREENSHOT_DIR))
-  fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
 const MAX_CAPTCHA_RETRIES = 2;
 async function waitForSubmissionSuccess(page) {
@@ -348,7 +338,6 @@ export async function run({
     unknown,
     location,
   };
-  const safeName = startUrl.replace(/https?:\/\//, "").replace(/[^\w]/g, "_");
 
   const browser = await chromium.launch({
     args: ["--disable-blink-features=AutomationControlled"],
@@ -629,11 +618,6 @@ export async function run({
 
       await setTimeout(3000);
       await disableAnimations(page);
-      await page.screenshot({
-        path: path.join(SCREENSHOT_DIR, `${safeName}_before.png`),
-        fullPage: false,
-        animations: "disabled",
-      });
 
       await solveCaptcha(page);
       const formAction = await page.evaluate(
@@ -672,7 +656,6 @@ export async function run({
       await setTimeout(2000);
       await disableAnimations(page);
       const afterScreenshot = await page.screenshot({
-        path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: false,
         animations: "disabled",
       });
@@ -715,12 +698,6 @@ export async function run({
 
     return { status: "not_found", url: startUrl, submitted: false };
   } catch (err) {
-    try {
-      await page.screenshot({
-        path: path.join(SCREENSHOT_DIR, `${safeName}_error.png`),
-        fullPage: true,
-      });
-    } catch {}
     throw err;
   } finally {
     await browser.close();

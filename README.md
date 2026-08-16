@@ -49,10 +49,6 @@ The container connects to the external `n8n` network. From n8n, call:
 http://cold-outreach:3000/run
 ```
 
-### Screenshots
-
-Screenshots are saved to `./screenshots` on the host (mounted as `/app/screenshots` in container).
-
 ## Environment Variables
 
 | Variable | Description |
@@ -65,3 +61,5 @@ Screenshots are saved to `./screenshots` on the host (mounted as `/app/screensho
 | `PROXY_USERNAME` | Proxy username |
 | `PROXY_PASSWORD` | Proxy password |
 | `HEADLESS` | Run browser in headless mode (default: true) |
+| `SUPABASE_URL` | Supabase project URL (uploads success screenshots) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |

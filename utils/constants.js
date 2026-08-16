@@ -1,5 +1,3 @@
-import os from "os";
-import path from "path";
 export const OPENAI = {
   api_key: process.env.OPENAI_API_KEY,
   api_url: process.env.OPENAI_URL,
@@ -24,7 +22,3 @@ export const SUPABASE = {
   url: process.env.SUPABASE_URL,
   serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
 };
-export const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(
-  path.resolve(import.meta.dirname, ".."),
-  "screenshots",
-);
