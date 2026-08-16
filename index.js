@@ -11,6 +11,7 @@ import {
 } from "./utils/constants.js";
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
+import { uploadSuccessScreenshot } from "./services/supabase.js";
 import { setTimeout } from "node:timers/promises";
 import TwoCaptcha from "@2captcha/captcha-solver";
 chromium.use(stealth());
@@ -331,6 +332,8 @@ export async function run({
     subject = "Hello",
     unknown = "Unknown",
     location = "US",
+    userId,
+    leadId,
   },
 }) {
   const values = {
@@ -422,7 +425,10 @@ export async function run({
   page.setDefaultTimeout(15000);
 
   try {
-    const res = await page.goto(startUrl, { waitUntil: "commit", timeout: 15000 });
+    const res = await page.goto(startUrl, {
+      waitUntil: "commit",
+      timeout: 15000,
+    });
     console.log(`[GOTO] status=${res?.status()} url=${res?.url()}`);
 
     const links = await page.$$eval("a", (as) => as.map((a) => a.href));
@@ -660,19 +666,36 @@ export async function run({
         .then((el) => !el)
         .catch(() => true);
       const happyText = await waitForSubmissionSuccess(page);
+      const submitted =
+        networkOk || urlChanged || formGone || happyText || isThankYouPage;
 
       await setTimeout(2000);
       await disableAnimations(page);
-      await page.screenshot({
+      const afterScreenshot = await page.screenshot({
         path: path.join(SCREENSHOT_DIR, `${safeName}_after.png`),
         fullPage: false,
         animations: "disabled",
       });
+
+      let attachmentId = null;
+      if (submitted) {
+        try {
+          const attachment = await uploadSuccessScreenshot({
+            userId,
+            leadId,
+            pngBuffer: afterScreenshot,
+          });
+          attachmentId = attachment?.id ?? null;
+        } catch (err) {
+          console.warn(`[SUPABASE] upload failed: ${err.message}`);
+        }
+      }
+
       return {
         status: "success",
         url: startUrl,
-        submitted:
-          networkOk || urlChanged || formGone || happyText || isThankYouPage,
+        submitted,
+        attachmentId,
         confidence: [
           networkOk,
           urlChanged,

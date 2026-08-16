@@ -19,6 +19,11 @@ export const TWO_CAPTCHA = {
   },
   visualFeedback: true,
 };
+
+export const SUPABASE = {
+  url: process.env.SUPABASE_URL,
+  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+};
 export const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(
   path.resolve(import.meta.dirname, ".."),
   "screenshots",
