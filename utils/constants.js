@@ -18,7 +18,9 @@ export const TWO_CAPTCHA = {
   visualFeedback: true,
 };
 
-export const SUPABASE = {
-  url: process.env.SUPABASE_URL,
-  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-};
+export function getSupabaseConfig() {
+  return {
+    url: process.env.SUPABASE_URL,
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  };
+}

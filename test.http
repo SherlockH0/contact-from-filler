@@ -4,13 +4,84 @@ POST http://localhost:3000/run HTTP/1.1
 
 {
   "company": "SherlockOrg",
-  "email": "2aK5B@example.com",
+  "email": "2aK5B@gmail.com",
+  "first_name": "Peter",
+  "last_name": "Parker",
+  "location": "US",
+  "message": "Привет! Я все починил!",
+  "name": "Peter Parker",
+  "phone": "1234567890",
+  "startUrl": "https://mom-ai-agency.site",
+  "subject": "Business Inquiry"
+}
+
+
+### 
+
+POST http://localhost:3000/run HTTP/1.1
+
+{
+  "company": "SherlockOrg",
+  "email": "2aK5B@gmail.com",
   "first_name": "Peter",
   "last_name": "Parker",
   "location": "US",
   "message": "Hello, I'm interested in your products.",
   "name": "Peter Parker",
-  "phone": "123-456-7890",
-  "startUrl": "http://www.vancouver-college-dental.org/",
+  "phone": "",
+  "startUrl": "http://www.urbandentalclinic.com",
+  "subject": "Business Inquiry"
+}
+
+
+### 
+
+POST http://localhost:3000/run HTTP/1.1
+
+{
+  "company": "SherlockOrg",
+  "email": "2aK5B@gmail.com",
+  "first_name": "Peter",
+  "last_name": "Parker",
+  "location": "US",
+  "message": "Hello, I'm interested in your products.",
+  "name": "Peter Parker",
+  "phone": "1234567890",
+  "startUrl": "http://www.sanremouk.com",
+  "subject": "Business Inquiry"
+}
+
+
+### 
+
+POST http://localhost:3000/run HTTP/1.1
+
+{
+  "company": "SherlockOrg",
+  "email": "2aK5B@gmail.com",
+  "first_name": "Peter",
+  "last_name": "Parker",
+  "location": "US",
+  "message": "Hello, I'm interested in your products.",
+  "name": "Peter Parker",
+  "phone": "1234567890",
+  "startUrl": "https://goldsmithscafe.co.uk",
+  "subject": "Business Inquiry"
+}
+
+### 
+
+POST http://localhost:3000/run HTTP/1.1
+
+{
+  "company": "SherlockOrg",
+  "email": "2aK5B@gmail.com",
+  "first_name": "Peter",
+  "last_name": "Parker",
+  "location": "US",
+  "message": "Hello, I'm interested in your products.",
+  "name": "Peter Parker",
+  "phone": "1234567890",
+  "startUrl": "https://daniildavtian.vercel.app",
   "subject": "Business Inquiry"
 }

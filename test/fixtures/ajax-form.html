@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AJAX Contact</title>
+  </head>
+  <body>
+    <h1>Contact</h1>
+    <form action="javascript:sendMessage();" name="contact_form">
+      <label>Name <input name="name" type="text" /></label>
+      <label>Email <input name="email" type="email" /></label>
+      <label>Message <textarea name="message"></textarea></label>
+      <button type="submit">Send Message</button>
+    </form>
+    <div id="status"></div>
+    <script>
+      const sendMessage = () => {
+        const form = document.forms.contact_form;
+        fetch("/send_message/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: form.elements.name.value,
+            email: form.elements.email.value,
+            message: form.elements.message.value,
+          }),
+        })
+          .then((r) => {
+            if (r.status === 200) {
+              document.getElementById("status").textContent = "sent";
+            }
+          })
+          .catch(() => {});
+        form.reset();
+      };
+    </script>
+  </body>
+</html>

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { SUPABASE } from "../utils/constants.js";
+import { getSupabaseConfig } from "../utils/constants.js";
 
 const BUCKET = "Files";
 
 export async function uploadSuccessScreenshot({ userId, leadId, pngBuffer }) {
+  const SUPABASE = getSupabaseConfig();
   if (!SUPABASE.url || !SUPABASE.serviceRoleKey) {
     console.warn("[SUPABASE] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY, skipping upload");
     return null;

@@ -5,6 +5,10 @@ import { TWO_CAPTCHA, PROXY, HEADLESS } from "./utils/constants.js";
 import { classifyFormsAI, mapFormToValues } from "./services/ai.js";
 import { filterContactLinks, submitFormSmart } from "./services/forms.js";
 import { uploadSuccessScreenshot } from "./services/supabase.js";
+import {
+  SUCCESS_PHRASES,
+  computeSignals,
+} from "./services/detection.js";
 import { setTimeout } from "node:timers/promises";
 import TwoCaptcha from "@2captcha/captcha-solver";
 chromium.use(stealth());
@@ -15,17 +19,11 @@ const MAX_CAPTCHA_RETRIES = 2;
 async function waitForSubmissionSuccess(page) {
   try {
     await page.waitForFunction(
-      () => {
+      (phrases) => {
         const text = document.body.innerText.toLowerCase();
-
-        return (
-          text.includes("thank you") ||
-          text.includes("success") ||
-          text.includes("received") ||
-          text.includes("we will contact you") ||
-          text.includes("message sent")
-        );
+        return phrases.some((p) => text.includes(p));
       },
+      SUCCESS_PHRASES,
       { timeout: 8000 },
     );
 
@@ -326,7 +324,11 @@ export async function run({
     userId,
     leadId,
   },
+  deps = {},
 }) {
+  const classify = deps.classifyFormsAI ?? classifyFormsAI;
+  const map = deps.mapFormToValues ?? mapFormToValues;
+  const upload = deps.uploadSuccessScreenshot ?? uploadSuccessScreenshot;
   const values = {
     name,
     first_name,
@@ -424,6 +426,7 @@ export async function run({
     const links = await page.$$eval("a", (as) => as.map((a) => a.href));
     const contactPages = [...filterContactLinks(links), startUrl];
 
+    let attachmentId = null;
     for (const p of contactPages) {
       await page.goto(p, { waitUntil: "commit", timeout: 15000 });
 
@@ -522,11 +525,11 @@ export async function run({
         );
       });
 
-      const valid_form_id = (await classifyFormsAI(forms))?.form_index;
+      const valid_form_id = (await classify(forms))?.form_index;
       if (valid_form_id == undefined) continue;
 
       const valid_form = forms[valid_form_id];
-      const mapping = await mapFormToValues(valid_form, values);
+      const mapping = await map(valid_form, values);
       if (!mapping || Object.keys(mapping).length === 0) continue;
 
       await page.evaluate(
@@ -664,28 +667,39 @@ export async function run({
         .then((el) => !el)
         .catch(() => true);
       const happyText = await waitForSubmissionSuccess(page);
-      const submitted =
-        networkOk || urlChanged || formGone || happyText || isThankYouPage;
+      const { submitted, confidence, signals } = computeSignals({
+        networkOk,
+        urlChanged,
+        formGone,
+        happyText,
+        isThankYouPage,
+      });
 
-      await setTimeout(2000);
+      await page.evaluate(
+        ({ index }) => {
+          document
+            .querySelectorAll("form")
+            [index]?.scrollIntoView({ behavior: "instant", block: "center" });
+        },
+        { index: Number(valid_form_id) },
+      );
+      await page.waitForTimeout(300);
       await disableAnimations(page);
+
       const afterScreenshot = await page.screenshot({
-        fullPage: false,
+        fullPage: true,
         animations: "disabled",
       });
 
-      let attachmentId = null;
-      if (submitted) {
-        try {
-          const attachment = await uploadSuccessScreenshot({
-            userId,
-            leadId,
-            pngBuffer: afterScreenshot,
-          });
-          attachmentId = attachment?.id ?? null;
-        } catch (err) {
-          console.warn(`[SUPABASE] upload failed: ${err.message}`);
-        }
+      try {
+        const attachment = await upload({
+          userId,
+          leadId,
+          pngBuffer: afterScreenshot,
+        });
+        attachmentId = attachment?.id ?? null;
+      } catch (err) {
+        console.warn(`[SUPABASE] upload failed: ${err.message}`);
       }
 
       return {
@@ -693,26 +707,28 @@ export async function run({
         url: startUrl,
         submitted,
         attachmentId,
-        confidence: [
-          networkOk,
-          urlChanged,
-          formGone,
-          happyText,
-          isThankYouPage,
-        ].filter(Boolean).length,
-        signals: {
-          networkOk,
-          urlChanged,
-          formGone,
-          happyText,
-          isThankYouPage,
-        },
+        confidence,
+        signals,
       };
     }
 
-    return { status: "not_found", url: startUrl, submitted: false };
-  } catch (err) {
-    throw err;
+    await page.goto(startUrl, { waitUntil: "commit", timeout: 15000 });
+    await disableAnimations(page);
+    const notFoundScreenshot = await page.screenshot({
+      fullPage: true,
+      animations: "disabled",
+    });
+    try {
+      const attachment = await upload({
+        userId,
+        leadId,
+        pngBuffer: notFoundScreenshot,
+      });
+      attachmentId = attachment?.id ?? null;
+    } catch (err) {
+      console.warn(`[SUPABASE] upload failed: ${err.message}`);
+    }
+    return { status: "not_found", url: startUrl, submitted: false, attachmentId };
   } finally {
     await browser.close();
   }
