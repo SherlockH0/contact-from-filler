@@ -686,10 +686,10 @@ export async function run({
       await page.waitForTimeout(300);
       await disableAnimations(page);
 
-      const afterScreenshot = await page.screenshot({
-        fullPage: true,
-        animations: "disabled",
-      });
+      const afterScreenshot = await page
+        .locator("form")
+        .nth(Number(valid_form_id))
+        .screenshot({ animations: "disabled" });
 
       try {
         const attachment = await upload({
