@@ -1,5 +1,6 @@
 export function filterContactLinks(links) {
-  const regex = /(contact|get.*touch|reach|support|help)/i;
+  const pathRegex = /\/(contact(?:ing|-us|-me|-page)?|get[-_]?(?:in[-_]?)?touch|reach[-_]?(?:us|-out)?|support(?:\/help|-team)?|help(?:\/support|-center)?)(?:\/|$|\?)/i;
+  const hashRegex = /(?:^#|\/#)(contact(?:ing|-us|-me)?|get[-_]?(?:in[-_]?)?touch|reach[-_]?(?:us|-out)?|support|help)/i;
   const negativeRegex = /blog/i;
   return [
     ...new Set(
@@ -15,7 +16,7 @@ export function filterContactLinks(links) {
         .filter((u) => {
           if (u.protocol === "mailto:") return false;
           if (negativeRegex.test(u.pathname)) return false;
-          return regex.test(u.pathname);
+          return pathRegex.test(u.pathname) || hashRegex.test(u.hash);
         })
         .map((u) => u.href)
         .sort((a, b) => a.length - b.length),

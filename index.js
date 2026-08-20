@@ -13,7 +13,16 @@ import { setTimeout } from "node:timers/promises";
 import TwoCaptcha from "@2captcha/captcha-solver";
 chromium.use(stealth());
 
-const solver = new TwoCaptcha.Solver(TWO_CAPTCHA.provider.token);
+let _solver = null;
+function getSolver() {
+  if (!_solver) {
+    if (!TWO_CAPTCHA.provider.token) {
+      throw new Error("TWOCAPTCHA_TOKEN is not set");
+    }
+    _solver = new TwoCaptcha.Solver(TWO_CAPTCHA.provider.token);
+  }
+  return _solver;
+}
 
 const MAX_CAPTCHA_RETRIES = 2;
 async function waitForSubmissionSuccess(page) {
@@ -67,7 +76,7 @@ async function solveCaptcha(page) {
     );
 
     log.info(`reCAPTCHA v3 — solving…`);
-    const { data: token } = await solver.recaptcha({
+    const { data: token } = await getSolver().recaptcha({
       googlekey: v3sitekey,
       pageurl: url,
       version: "v3",
@@ -118,7 +127,7 @@ async function solveCaptcha(page) {
       log.info(
         `reCAPTCHA v2 — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
       );
-      const { data: token } = await solver.recaptcha({
+      const { data: token } = await getSolver().recaptcha({
         googlekey: v2sitekey,
         pageurl: url,
       });
@@ -185,7 +194,7 @@ async function solveCaptcha(page) {
         log.info(
           `hCaptcha — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
         );
-        const { data: token } = await solver.hcaptcha({
+        const { data: token } = await getSolver().hcaptcha({
           sitekey: hkey,
           pageurl: url,
         });
@@ -236,7 +245,7 @@ async function solveCaptcha(page) {
       log.info(
         `Turnstile — solving (attempt ${attempt}/${MAX_CAPTCHA_RETRIES})`,
       );
-      const { data: token } = await solver.cloudflareTurnstile({
+      const { data: token } = await getSolver().cloudflareTurnstile({
         sitekey: tskey,
         pageurl: url,
       });
@@ -329,6 +338,19 @@ export async function run({
   const classify = deps.classifyFormsAI ?? classifyFormsAI;
   const map = deps.mapFormToValues ?? mapFormToValues;
   const upload = deps.uploadSuccessScreenshot ?? uploadSuccessScreenshot;
+
+  if (!startUrl || typeof startUrl !== "string") {
+    throw new Error("startUrl is required");
+  }
+  try {
+    const parsed = new URL(startUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error("startUrl must use http or https");
+    }
+  } catch (err) {
+    throw new Error(`Invalid startUrl: ${err.message}`);
+  }
+
   const values = {
     name,
     first_name,
@@ -381,25 +403,30 @@ export async function run({
     });
   });
   await context.addInitScript(() => {
-    // reCAPTCHA
-    window.grecaptcha = window.grecaptcha || {
-      render: () => "mock",
-      execute: () => Promise.resolve("mock"),
-      ready: (cb) => cb(),
-      getResponse: () => "mock",
-    };
+    // Only mock captcha globals if they haven't been defined by real scripts yet.
+    // Real scripts will overwrite these when they load.
+    if (typeof window.grecaptcha === "undefined") {
+      window.grecaptcha = {
+        render: () => "mock",
+        execute: () => Promise.resolve("mock"),
+        ready: (cb) => cb(),
+        getResponse: () => "mock",
+      };
+    }
 
-    // hCaptcha
-    window.hcaptcha = window.hcaptcha || {
-      render: () => "mock",
-      execute: () => Promise.resolve("mock"),
-      getResponse: () => "mock",
-    };
+    if (typeof window.hcaptcha === "undefined") {
+      window.hcaptcha = {
+        render: () => "mock",
+        execute: () => Promise.resolve("mock"),
+        getResponse: () => "mock",
+      };
+    }
 
-    // Cloudflare Turnstile
-    window.turnstile = window.turnstile || {
-      render: () => "mock",
-    };
+    if (typeof window.turnstile === "undefined") {
+      window.turnstile = {
+        render: () => "mock",
+      };
+    }
 
     // Google Maps (VERY common crash source)
     window.google = window.google || {};
@@ -592,6 +619,7 @@ export async function run({
             );
           } else {
             if (String(value).length > 20 || tag === "textarea") {
+              await locator.fill("");
               await locator.pressSequentially(String(value), {
                 delay: 40 + Math.random() * 120,
               });
@@ -646,13 +674,14 @@ export async function run({
                   req.resourceType() === "fetch" ||
                   req.resourceType() === "xhr";
                 if (!isAsync) return false;
-                if (formAction && r.url() === formAction) return true;
-                let sameOrigin = false;
-                try {
-                  sameOrigin =
-                    new URL(req.url()).origin === new URL(page.url()).origin;
-                } catch {}
-                return sameOrigin;
+                if (formAction) {
+                  try {
+                    return new URL(r.url()).href === new URL(formAction, page.url()).href;
+                  } catch {
+                    return false;
+                  }
+                }
+                return false;
               },
               { timeout: 5000 },
             )
@@ -663,8 +692,7 @@ export async function run({
       const urlChanged = page.url() !== urlBeforeSubmit;
       const isThankYouPage = /thank.?you|confirm|success/i.test(page.url());
       const formGone = await page
-        .$(`form:nth-of-type(${valid_form_id + 1})`)
-        .then((el) => !el)
+        .evaluate((idx) => !document.querySelectorAll("form")[idx], Number(valid_form_id))
         .catch(() => true);
       const happyText = await waitForSubmissionSuccess(page);
       const { submitted, confidence, signals } = computeSignals({
@@ -686,10 +714,17 @@ export async function run({
       await page.waitForTimeout(300);
       await disableAnimations(page);
 
-      const afterScreenshot = await page
-        .locator("form")
-        .nth(Number(valid_form_id))
-        .screenshot({ animations: "disabled" });
+      let afterScreenshot;
+      try {
+        afterScreenshot = await page
+          .locator("form")
+          .nth(Number(valid_form_id))
+          .screenshot({ animations: "disabled" });
+      } catch {
+        afterScreenshot = await page.screenshot({
+          animations: "disabled",
+        });
+      }
 
       try {
         const attachment = await upload({
@@ -712,10 +747,8 @@ export async function run({
       };
     }
 
-    await page.goto(startUrl, { waitUntil: "commit", timeout: 15000 });
     await disableAnimations(page);
     const notFoundScreenshot = await page.screenshot({
-      fullPage: true,
       animations: "disabled",
     });
     try {

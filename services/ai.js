@@ -1,7 +1,10 @@
 import { aiRequest } from "../utils/ai.js";
 
 export async function classifyFormsAI(forms) {
-  return await aiRequest(
+  const formCount = Object.keys(forms).length;
+  if (formCount === 0) return {};
+
+  const result = await aiRequest(
     `
 You analyze website forms.
 
@@ -22,11 +25,16 @@ Output format:
 }`,
     JSON.stringify(forms),
   );
+
+  const idx = result?.form_index;
+  if (typeof idx !== "number" || idx < 0 || idx >= formCount || !Number.isInteger(idx)) {
+    return {};
+  }
+  return { form_index: idx };
 }
 
 export async function mapFormToValues(valid_form, values) {
-  // Ask OpenAI which role each field corresponds to
-  return await aiRequest(
+  const result = await aiRequest(
     `
 You are given a list of form fields (id, label, placeholder, name, type, tag) and a list of form values. 
 For each field you should return a value to use. For the fields that are not in the list of values, you should generate a realistic value.
@@ -37,6 +45,7 @@ Rules:
 - For select fields, choose one of the provided options
 - For multiple selects, return an array
 - Never return null or undefined
+- Only return keys that match field ids from the input (f0, f1, f2, ...)
 
 
 Example input:
@@ -96,4 +105,15 @@ Return a JSON object where keys are field ids and values are the final values to
       form: valid_form.fields,
     }),
   );
+
+  if (!result || typeof result !== "object") return {};
+
+  const validIds = new Set(valid_form.fields.map((f) => f.id));
+  const filtered = {};
+  for (const [key, val] of Object.entries(result)) {
+    if (validIds.has(key) && val !== undefined && val !== null) {
+      filtered[key] = val;
+    }
+  }
+  return filtered;
 }
